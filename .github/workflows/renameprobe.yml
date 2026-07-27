@@ -1,0 +1,33 @@
+name: rename-probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: rename a ruleset-covered branch with contents-write only
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          A="https://api.github.com"
+          echo "=== D1 GitHub's declared permission for the rename endpoint ==="
+          curl -s -D- -o /dev/null -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"new_name":"perm-probe-xyz"}' "$A/repos/$REPO/branches/does-not-exist-xyz/rename" \
+            | grep -i 'x-accepted-github-permissions\|^HTTP'
+          echo "=== D2 declared permission on the RULESETS admin endpoint for contrast ==="
+          curl -s -D- -o /dev/null -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+            "$A/repos/$REPO/rulesets/19815725" | grep -i 'x-accepted-github-permissions\|^HTTP'
+          echo "=== D3 CONTROL rename an UNPROTECTED branch (proves the token can rename at all) ==="
+          curl -s -w '\nHTTP %{http_code}\n' -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"new_name":"unprot-renamed"}' "$A/repos/$REPO/branches/unprot/rename" | tail -4
+          echo "=== D4 PROBE rename the ruleset-covered branch chk ==="
+          curl -s -w '\nHTTP %{http_code}\n' -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"new_name":"chk-escaped-by-write"}' "$A/repos/$REPO/branches/chk/rename" | tail -6
+          echo "=== D5 PROBE rename the ruleset-covered branch sig ==="
+          curl -s -w '\nHTTP %{http_code}\n' -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"new_name":"sig-escaped-by-write"}' "$A/repos/$REPO/branches/sig/rename" | tail -6
+          echo "=== D6 did chk actually move ==="
+          curl -s "$A/repos/$REPO/branches/chk-escaped-by-write" -H "Authorization: Bearer $GH_TOKEN" | head -3
